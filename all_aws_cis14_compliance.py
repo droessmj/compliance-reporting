@@ -1,6 +1,4 @@
 import os
-from types import MappingProxyType
-import pandas as pd
 import logging
 import argparse
 import json
@@ -117,16 +115,6 @@ if __name__ == "__main__":
         '-p', '--profile',
         default='default',
         help='The Lacework CLI profile to use'
-    )
-    parser.add_argument(
-        '-d', '--days',
-        default=1,
-        help='Number of days for lookback'
-    )
-    parser.add_argument(
-        '-f', '--filter',
-        default='',
-        help='Desired hostname filter for mid lookup'
     )
     parser.add_argument(
         '--debug',
