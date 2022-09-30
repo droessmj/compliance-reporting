@@ -4,6 +4,7 @@ import argparse
 import json
 
 from laceworksdk import LaceworkClient
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 logger = logging.getLogger('compliance-results')
@@ -11,7 +12,8 @@ logger.setLevel(os.getenv('LOG_LEVEL', logging.INFO))
 
 
 class NormalizedFinding():
-    def __init__(self, account_id, violations, resource_count, severity):
+    def __init__(self, account_id, violations, resource_count, severity, title):
+        self.title = title
         self.account_id = account_id
         self.violations = violations
         self.resource_count = int(resource_count)
@@ -37,13 +39,13 @@ def get_aws_account_ids(lw_client: LaceworkClient) -> list[str]:
     return list_aws_account_ids
 
 
-def get_compliance_results(lw_client: LaceworkClient, target_account: str) -> list[dict]:
+def get_compliance_results(lw_client: LaceworkClient, target_account: str, i: int) -> list[dict]:
     report_results = lw_client.reports.get(
         primaryQueryId=target_account,
         format='json',
         reportType='AWS_CIS_14'
     )
-    return report_results['data'] if report_results['data'] else [{}]
+    return (report_results['data'],i) if report_results['data'] else ([{}],i)
 
 
 def main(args: argparse.Namespace):
@@ -65,25 +67,40 @@ def main(args: argparse.Namespace):
         raise    
 
     aws_account_ids = get_aws_account_ids(lw_client)
-
+    logger.debug(f'AWS accounts to retrieve reports for: {aws_account_ids}')
+    
+    
+    total_accounts = len(aws_account_ids)
     normalized_findings = list()
-    for account_id in aws_account_ids:
-        compliance_results = get_compliance_results(lw_client, account_id)
-        # don't ask me why this is a list of one...but I'm afraid to hard code it
-        for c_result in compliance_results:
-            recommendations = c_result['recommendations']
-            for rec in recommendations:
-                normalized_findings.append(NormalizedFinding(
-                    rec['ACCOUNT_ID'],
-                    rec['VIOLATIONS'],
-                    rec['RESOURCE_COUNT'],
-                    rec['SEVERITY']
-                  )
+    executor_tasks = list()
+    
+    # threaded implementation to concurrently assess distinct accounts
+    with ThreadPoolExecutor() as executor:
+
+        for i,account_id in enumerate(aws_account_ids):
+            executor_tasks.append(executor.submit(get_compliance_results, lw_client, account_id, i))
+
+        for task in as_completed(executor_tasks):
+
+            task_result = task.result()
+            account_id = ''
+            # don't ask me why this is a list of one...but I'm afraid to hard code it
+            for compliance_result in task_result[0]:
+                recommendations = compliance_result['recommendations'] if 'recommendations' in compliance_result else []
+                for rec in recommendations:
+                    account_id = rec['ACCOUNT_ID']
+                    normalized_findings.append(
+                        NormalizedFinding(
+                            rec['ACCOUNT_ID'],
+                            rec['VIOLATIONS'],
+                            rec['RESOURCE_COUNT'],
+                            rec['SEVERITY'],
+                            rec['TITLE']
+                        )
                 )
+                logger.debug(f'processed account_id {account_id} - account {task_result[1]} of {total_accounts}')
     
     print(json.dumps(normalized_findings, default = lambda x: x.__dict__, indent=2))
-
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
